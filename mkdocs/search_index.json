@@ -1,0 +1,14 @@
+{
+    "docs": [
+        {
+            "location": "/",
+            "text": "TensorProb: Statistical inference with TensorFlow\n\n\nYou've found \nTensorProb\n, a probabalistic graphical modeling and inference framework based on \nTensorFlow\n.",
+            "title": "Home"
+        },
+        {
+            "location": "/#tensorprob-statistical-inference-with-tensorflow",
+            "text": "You've found  TensorProb , a probabalistic graphical modeling and inference framework based on  TensorFlow .",
+            "title": "TensorProb: Statistical inference with TensorFlow"
+        }
+    ]
+}
