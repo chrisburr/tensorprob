@@ -29,13 +29,14 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 from . import config
-from . import utilities
 from . import distributions
+from . import utilities
 from .distribution import Distribution, DistributionError
-from .model import Model, ModelError
-from .parameter import Parameter
-from .stats import fisher
 from .distributions import *
+from .model import Model, ModelError
 from .optimizers import *
+from .parameter import Parameter
+from .probgraph import ProbGraph
 from .samplers import *
+from .stats import fisher
 from .utilities import Region

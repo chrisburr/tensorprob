@@ -1,19 +1,15 @@
-from collections import OrderedDict
 import logging
-logger = logging.getLogger('tensorprob')
 
-import numpy as np
 import tensorflow as tf
 
-from . import config
+from .probgraph import ProbGraph
 from .utilities import (
     classproperty,
-    Description,
     generate_name,
-    ModelSubComponet,
-    Region,
-    set_logp_to_neg_inf
+    ModelSubComponet
 )
+
+logger = logging.getLogger('tensorprob')
 
 
 class ModelError(RuntimeError):
@@ -66,24 +62,7 @@ class Model(object):
     _current_model = None
 
     def __init__(self, name=None):
-        # The description of the model. This is a dictionary from all
-        # `tensorflow.placeholder`s representing the random variables of the
-        # model (defined by the user in the model block) to their `Description`s
-        self._description = dict()
-        self._full_description = dict()
-        # A dictionary mapping the `tensorflow.placeholder`s representing the
-        # observed variables of the model to `tensorflow.Variables`
-        # These are set in the `model.observed()` method
-        # If this is none, `model.observed()` has not been called yet
-        self._observed = None
-        # A dictionary from `tensorflow.placeholder`s representing the hidden (latent)
-        # variables of the model to `tensorflow.Variables` carrying the current state
-        # of the model
-        self._hidden = None
-        self._setters = None
-        # A dictionary mapping `tensorflow.placeholder`s of variables to new
-        # `tensorflow.placeholder`s which have been substituted using combinators
-        self._silently_replace = dict()
+        self.prob_graph = ProbGraph()
         # The graph that the user's model is originally constructed in
         self._model_graph = tf.Graph()
         # The session that we will eventually run with
@@ -111,17 +90,8 @@ class Model(object):
     def __exit__(self, e_type, e, tb):
         Model._current_model = None
 
-        # Normalise all log probabilities contained in _description
-        for var, (logp, integral, bounds, frac, _) in self._full_description.items():
-            logp -= tf.log(tf.add_n([integral(l, u) for l, u in bounds]))
-
-            # Force logp to negative infinity when outside the allowed bounds
-            logp = set_logp_to_neg_inf(var, logp, bounds)
-
-            # Add the changed logp to the model description
-            self._full_description[var] = Description(logp, integral, bounds, frac, _)
-            if var in self._description:
-                self._description[var] = Description(logp, integral, bounds, frac, _)
+        # Finalize the probabilistic graph
+        self.prob_graph.finalize()
 
         # Exit the tensorflow graph
         self.graph_ctx.__exit__(e_type, e, tb)
@@ -135,6 +105,7 @@ class Model(object):
             raise
 
     def __getitem__(self, key):
+        raise NotImplementedError
         if key not in self._full_description:
             raise KeyError
 
@@ -170,42 +141,11 @@ class Model(object):
         if Model._current_model == self:
             raise ModelError("Can't call `model.observed()` inside the model block")
 
-        for arg in args:
-            if arg not in self._description:
-                raise ValueError("Argument {} is not known to the model".format(arg))
-
-        self._observed = OrderedDict()
-        self._setters = dict()
+        # for arg in args:
+        #     if arg not in self._description:
+        #         raise ValueError("Argument {} is not known to the model".format(arg))
         with self.session.graph.as_default():
-            for arg in args:
-                dummy = tf.Variable(arg.dtype.as_numpy_dtype())
-                self._observed[arg] = dummy
-                setter_var = tf.Variable(arg.dtype.as_numpy_dtype(), name=arg.name.split(':')[0])
-                setter = tf.assign(dummy, setter_var, validate_shape=False)
-                self._setters[dummy] = (setter, setter_var)
-
-    def _rewrite_graph(self, transform):
-        input_map = {k.name: v for k, v in transform.items()}
-
-        # Modify the input dictionary to replace variables which have been
-        # superseded with the use of combinators
-        for k, v in self._silently_replace.items():
-            input_map[k.name] = self._observed[v]
-
-        with self.session.graph.as_default():
-            try:
-                tf.import_graph_def(
-                        self._model_graph.as_graph_def(),
-                        input_map=input_map,
-                        name='added',
-                )
-            except ValueError:
-                # Ignore errors that ocour when the input_map tries to
-                # rewrite a variable that isn't present in the graph
-                pass
-
-    def _get_rewritten(self, tensor):
-        return self.session.graph.get_tensor_by_name('added/' + tensor.name)
+            self.prob_graph.set_observed(args)
 
     def initialize(self, assign_dict):
         '''Allows you to specify the initial state of the unobserved (latent)
@@ -228,13 +168,13 @@ class Model(object):
         if Model._current_model == self:
             raise ModelError("Can't call `model.initialize()` inside the model block")
 
-        if self._observed is None:
-            raise ModelError("Can't initialize latent variables before "
-                             "`model.observed()` has been called.")
+        # if self._observed is None:
+        #     raise ModelError("Can't initialize latent variables before "
+        #                      "`model.observed()` has been called.")
 
-        if self._hidden is not None:
-            raise ModelError("Can't call `model.initialize()` twice. Use "
-                             "`model.assign()` to change the state.")
+        # if self._hidden is not None:
+        #     raise ModelError("Can't call `model.initialize()` twice. Use "
+        #                      "`model.assign()` to change the state.")
 
         if not isinstance(assign_dict, dict) or not assign_dict:
             raise ValueError("Argument to `model.initialize()` must be a "
@@ -245,84 +185,8 @@ class Model(object):
                 raise ValueError("Key in the initialization dict is not a "
                                  "tf.Tensor: {}".format(repr(key)))
 
-        hidden = set(self._description.keys()).difference(set(self._observed))
-        if hidden != set(assign_dict.keys()):
-            raise ModelError("Not all latent variables have been passed in a "
-                             "call to `model.initialize().\nMissing variables: {}"
-                             .format(hidden.difference(assign_dict.keys())))
-
-        # Add variables to the execution graph
         with self.session.graph.as_default():
-            self._hidden = dict()
-            for var in hidden:
-                self._hidden[var] = tf.Variable(var.dtype.as_numpy_dtype(assign_dict[var]),
-                                                name=var.name.split(':')[0])
-        self.session.run(tf.initialize_variables(list(self._hidden.values())))
-        # Sort the hidden variables so we can access them in a consistant order
-        self._hidden_sorted = sorted(self._hidden.keys(), key=lambda v: v.name)
-        for h in self._hidden.values():
-            with self.session.graph.as_default():
-                var = tf.Variable(h.dtype.as_numpy_dtype(),
-                                  name=h.name.split(':')[0] + '_placeholder')
-                setter = h.assign(var)
-            self._setters[h] = (setter, var)
-
-        all_vars = self._hidden.copy()
-        all_vars.update(self._observed)
-
-        self._rewrite_graph(all_vars)
-
-        with self.session.graph.as_default():
-            # observed_logps contains one element per data point
-            observed_logps = OrderedDict()
-            # TODO Remove, see Model.pdf
-            observed_logp_setters = []
-            for v in self._observed:
-                logp_flag = tf.Variable(
-                    np.int32(-42),
-                    name=v.name.split(':')[0] + '_logp'
-                )
-                var = tf.Variable(
-                    np.int32(-42),
-                    name=logp_flag.name.split(':')[0] + '_placeholder'
-                )
-                setter = logp_flag.assign(var)
-
-                observed_logp_setters.append((setter, var, logp_flag))
-                observed_logps[v] = tf.cond(
-                    tf.equal(logp_flag, -42),
-                    lambda: self._get_rewritten(self._description[v].logp),
-                    lambda: tf.fill(tf.reshape(tf.to_int32(logp_flag), [1]), config.dtype(0))
-                )
-            # hidden_logps contains a single value
-            hidden_logps = [self._get_rewritten(self._description[v].logp) for v in self._hidden]
-
-            # Handle the case where we don't have observed variables.
-            # We define the probability to not observe anything as 1.
-            if observed_logps:
-                observed_logps = list(observed_logps.values())
-            else:
-                observed_logps = [tf.constant(0, dtype=config.dtype)]
-            self._logp_flag_setters = observed_logp_setters
-
-            self._pdf = tf.exp(tf.add_n(observed_logps))
-
-            self._nll = -tf.add_n(
-                [tf.reduce_sum(logp) for logp in observed_logps] +
-                hidden_logps
-            )
-
-            variables = [self._hidden[k] for k in self._hidden_sorted]
-            self._nll_grad = tf.gradients(self._nll, variables)
-            for i, (v, g) in enumerate(zip(variables, self._nll_grad)):
-                if g is None:
-                    self._nll_grad[i] = tf.constant(0, dtype=config.dtype)
-                    logger.warn('Model is independent of variable {}'.format(
-                        v.name.split(':')[0]
-                    ))
-
-        if observed_logp_setters:
-            self.session.run(tf.initialize_variables([x[2] for x in observed_logp_setters]))
+            self.prob_graph.initialize(assign_dict)
 
         self.initialized = True
 
@@ -337,24 +201,7 @@ class Model(object):
             This has to specify a value for a subset of the unobserved (latent)
             variables of the model.
         '''
-        if Model._current_model == self:
-            raise ModelError("Can't call `model.assign()` inside the model block")
-
-        if not isinstance(assign_dict, dict) or not assign_dict:
-            raise ValueError("Argument to assign must be a dictionary with "
-                             "more than one element")
-
-        if self._observed is None:
-            raise ModelError("Can't assign state to the model before "
-                             "`model.observed()` has been called.")
-
-        if self._hidden is None:
-            raise ModelError("Can't assign state to the model before "
-                             "`model.initialize()` has been called.")
-
-        # Assign values without adding to the graph
-        setters = [self._setters[self._hidden[k]][0] for k, v in assign_dict.items()]
-        feed_dict = {self._setters[self._hidden[k]][1]: v for k, v in assign_dict.items()}
+        setters, feed_dict = self.prob_graph.assign(assign_dict)
         self.session.run(setters, feed_dict=feed_dict)
 
     @property

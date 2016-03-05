@@ -104,17 +104,10 @@ def Distribution(distribution_init):
         for var, bound in zip(variables, bounds):
             logp = utilities.set_logp_to_neg_inf(var, logp, bound)
 
-        # Add the new variables to the model description
+        # Add the new variables to the model's probalistic graph
         for variable, bound in zip(variables, bounds):
-            description = Description(
-                logp,
-                Distribution.integral,
-                bound,
-                tf.constant(1, config.dtype),
-                Distribution.depends
-            )
-            Model.current_model._description[variable] = description
-            Model.current_model._full_description[variable] = description
+            Model.current_model.prob_graph.add_dist(variable, bound)
+        Model.current_model.prob_graph.add_graph(variables, logp, Distribution.integral)
 
         return variable if len(variables) == 1 else variables
     return f
