@@ -103,7 +103,7 @@ def set_logp_to_neg_inf(X, logp, bounds):
         for condition in conditions[1:]:
             is_inside_bounds = tf.logical_or(is_inside_bounds, condition)
 
-        logp = tf.select(
+        logp = tf.where(
             is_inside_bounds,
             logp,
             tf.fill(tf.shape(X), config.dtype(-np.inf))

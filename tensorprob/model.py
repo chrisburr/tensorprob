@@ -257,7 +257,7 @@ class Model(object):
             for var in hidden:
                 self._hidden[var] = tf.Variable(var.dtype.as_numpy_dtype(assign_dict[var]),
                                                 name=var.name.split(':')[0])
-        self.session.run(tf.initialize_variables(list(self._hidden.values())))
+        self.session.run(tf.variables_initializer(list(self._hidden.values())))
         # Sort the hidden variables so we can access them in a consistant order
         self._hidden_sorted = sorted(self._hidden.keys(), key=lambda v: v.name)
         for h in self._hidden.values():
@@ -322,7 +322,7 @@ class Model(object):
                     ))
 
         if observed_logp_setters:
-            self.session.run(tf.initialize_variables([x[2] for x in observed_logp_setters]))
+            self.session.run(tf.variables_initializer([x[2] for x in observed_logp_setters]))
 
         self.initialized = True
 

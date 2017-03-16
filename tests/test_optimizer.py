@@ -7,7 +7,7 @@ from nose.tools import raises
 def test_scipy_lbfgsb():
     sess = tf.Session()
     x = tf.Variable(np.float64(2), name='x')
-    sess.run(tf.initialize_variables([x]))
+    sess.run(tf.variables_initializer([x]))
     optimizer = ScipyLBFGSBOptimizer(verbose=True, session=sess)
     # With gradient
     results = optimizer.minimize([x], x**2, [2 * x])
@@ -32,7 +32,7 @@ def test_scipy_lbfgsb():
 def test_migrad():
     sess = tf.Session()
     x = tf.Variable(np.float64(2), name='x')
-    sess.run(tf.initialize_variables([x]))
+    sess.run(tf.variables_initializer([x]))
     optimizer = MigradOptimizer(session=sess)
     # With gradient
     results = optimizer.minimize([x], x**2, [2 * x])
